@@ -1,0 +1,863 @@
+---
+title: "Predição - Progresso dos usuários no jogo"
+author: "Rodolfo Viana"
+date: "19-06-2016"
+output: html_document
+---
+
+## Modelagem do Problema 
+
+Utilizando o dataset referente ao comportamento de 10.000 usuários em um jogo, queremos saber **qual será o progresso dos usuários no jogo daqui a 2 dias?**
+
+É apresentado um dataset de um jogo com features de 10.000 usuários que possuem activation date no período de 25/05 até 28/05, exclusive. 
+
+O dataset está dividido em training (70%) e test set (30%), ambos compostos por features dos usuários nesse mesmo período: o training set terá ainda uma coluna de gabarito dizendo qual é o progresso do usuário 2 dias depois do período capturado (no dia 30/05). O test set será utilizado para testar a precisão do modelo.
+
+```{r, warning=FALSE, message=FALSE}
+# Carregando as bibliotecas necessárias 
+library(dplyr)
+library(ggplot2)
+library(caret)
+library(corrplot)
+library(h2o)
+```
+
+## Exploração dos dados
+
+```{r, warning=FALSE, message=FALSE}
+# Carregando os dados
+dados <- read.csv("~/Desktop/tfg/Dados/training_progress_predictor-3.csv")
+
+# Dim do dataset
+dim(dados)
+```
+
+Temos 7000 observações no treino e 15 features. 
+
+```{r, warning=FALSE, message=FALSE}
+# Conta quantos casos não completo existe
+sum(!complete.cases(dados))
+```
+
+Não existe caso com observações incompletas, aparentemente.
+
+```{r, warning=FALSE, message=FALSE}
+# Nome das colunas
+colnames(dados)
+```
+
+As features são referentes ao período desde o activation date até o dia 28/05 exclusive e são:
+
+* user: Id do usuário 
+* revenue: total gasto pelo usuário
+* units:
+* ls.date: data da última sessão
+* tsls: tempo desde a última sessão (s)
+* rating: opção no popup de rating (Yes (1), No (0), None (-1))
+* ttp: tempo total jogado (s)
+* total.sessions: número total de sessões
+* completed: porcentagem do jogo completa
+* completed.post: porcentagem do jogo completa após 2 dias
+* win.rate: overall Win Rate (%)
+* tries: número de tentativas totais
+* device: device que o usuário está jogando (iPhone, iPad, iPod)
+* tbs: médio entre sessões desde o activation date (s)
+* tsad: tempo desde a última sessão (s)
+
+As 6 primeiras observações do dataset
+
+```{r, warning=FALSE, message=FALSE}
+# Head do dataset
+head(dados)
+```
+
+As 6 últimas observações do dataset
+
+```{r, warning=FALSE, message=FALSE}
+# Tail do dataset
+tail(dados)
+```
+
+O nosso dataset possui a seguinte estrutura
+
+```{r, warning=FALSE, message=FALSE}
+# Structure do dataset
+str(dados)
+```
+
+### Completed Post
+
+O comportamento da variável resposta é
+
+```{r, warning=FALSE, message=FALSE}
+dados$completed.post <- as.numeric(as.character(dados$completed.post)) 
+sum(!complete.cases(dados$completed.post))
+```
+
+Notamos que temos `r sum(!complete.cases(dados$completed.post))` casos em que o completed.post é desconhecido
+
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+ggplot(data=dados, aes(dados$completed.post*100)) + 
+  geom_histogram(aes(fill=..count..)) +
+  labs(title="Histograma do Completed Post") +
+  labs(x="% do jogo completo após 2 dias", y="Count") + 
+  scale_fill_gradient("Count", low = "green", high = "red") + 
+  theme_classic()
+```
+
+Temos uma maior concentração da variável completed.post em torno de valores abaixo de 30%
+
+```{r, warning=FALSE, message=FALSE}
+min(dados$completed.post, na.rm = TRUE)
+max(dados$completed.post, na.rm = TRUE)
+```
+
+A variável completed post varia de `r min(dados$"completed.post", na.rm = TRUE)` para `r max(dados$completed.post, na.rm = TRUE)`. 
+Temos valores acima de 1, o que chega a ser um pouco anormal pois acredito que essa variável deveria ser um valor entre 0-1. Eu deveria então investigar como que foi a aquisição dos dados para verificar se essa minha suspeita faz sentido.
+
+### Revenue
+
+Total gasto pelo usuário
+
+```{r, warning=FALSE, message=FALSE}
+dados$revenue <- as.numeric(as.character(dados$revenue)) 
+sum(!complete.cases(dados$revenue))
+```
+
+Temos `r sum(!complete.cases(dados$revenue))` casos em que o revenue é desconhecido. O que é um valor bastante alto. Talvez essa variável não seja útil para a criação do nosso modelo.
+
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+ggplot(data=dados, aes(dados$revenue)) + 
+  geom_histogram() +
+  labs(title="Histograma do total gasto pelo usuário") +
+  labs(x="Total gasto pelo usuário", y="Count") +  
+  theme_classic()
+```
+
+A grande maioria dos usuários não gastam no jogo. 
+
+### Units
+
+A proporção da variável units é:
+
+```{r, warning=FALSE, message=FALSE}
+prop.table(table(dados$units))
+```
+
+A grande maioria das nossa observações tem o valor NULL na variável units. 
+No gráfico abaixo é possível notar como é grande a diferença nos valores. 
+
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+toPlot <- as.data.frame(prop.table(table(dados$units)))
+
+ggplot(toPlot, aes(x = Var1, y = Freq)) +
+  geom_bar(stat="identity") +
+  labs(y='Frequency', x='Type of test result') +
+  theme_classic() +
+  theme(axis.ticks = element_blank())
+```
+
+### TSLS
+
+Tempo desde a última sessão
+
+```{r, warning=FALSE, message=FALSE}
+dados$tsls <- as.numeric(as.character(dados$tsls)) 
+sum(!complete.cases(dados$tsls))
+```
+
+Temos `r sum(!complete.cases(dados$tsls))` casos em que o tsls é desconhecido. 
+
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+boxplot(dados$tsls, data=dados$tsls, main="Car Milage Data", 
+    xlab="Number of Cylinders", ylab="Miles Per Gallon")
+
+summary(dados$tsls, na.rm = TRUE)
+```
+
+A média de tempo desde a última sessão é de `r mean(dados$tsls, na.rm = TRUE)`
+
+### TTP
+
+Tempo total jogado
+
+```{r, warning=FALSE, message=FALSE}
+sum(!complete.cases(dados$ttp))
+```
+
+Temos `r sum(!complete.cases(dados$ttp))` casos em que o ttp é desconhecido. O que é uma noticia muito boa já que essa variável pode ser bem importante pare o modelo. Acredito inicialmente que quanto maior for o tempo total jogado maior será o progresso do usuário
+
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+summary(dados$ttp, na.rm = TRUE)
+```
+
+O maior tempo total jogado é (em segundos)
+`r max(dados$ttp, na.rm = TRUE)` o que são mais ou menos `r (max(dados$ttp, na.rm = TRUE)/60)/60` horas. O tempo médio total jogado é (em segundos) `r mean(dados$ttp, na.rm = TRUE)`
+
+### Corelação TTP x Completed Post
+
+Para verificar se quanto maior o tempo total maior será o progresso do usuário iremos verificar a correlação entre as variáveis TTP x Completed Post
+
+```{r, warning=FALSE, message=FALSE}
+cor(dados$completed.post, dados$ttp, use = 'complete.obs') 
+```
+
+A correlação é um valor que varia entre -1 e 1. Quanto mais próximo de 0 menor é a correlação entre as duas variávei. Para o dataset observado temos uma correlação de `r cor(dados$completed.post, dados$ttp, use = 'complete.obs')`. Temos uma correlação positiva, o que significa que quando um valor crescer o outro também irá crescer na maioria dos casos.
+
+Conclusões da inicial exploração dos dados:
+
+* Existe uma necessidade de transformar as variáveis (muita vezes de factor para númeric);
+* A variável completed.post não tem distribuição uniforme. A grande maioria dos valores ficam abaixo de 0.3 
+* Temos muitos valores NULL/NA
+* O campo ls.date podem ser convertidos em novas features (ano, mês, dia)
+* A variável completed.post tem valores acima de 1, o que pode significar um erro nos dados.
+
+## Preparação dos Dados 
+
+### Deletando valores "anormais"
+
+Por acreditar que um valor maior que 1 na variável completed.post seja um erro na aquisição dos dados, iremos deletar essas observações. Também iremos deletar observações com NA na variável completed post pela mesma razão.
+
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+dados <- filter(dados, completed.post <= 100)
+```
+
+### Derivando novas features
+
+Iremos criar 5 novas colunas derivadas da variável ls.date (data, dia, mês, ano, dia da semana). 
+
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+# Data
+dados$data <- as.Date(as.character(dados$ls.date), format = "%Y-%m-%d")
+
+# Ano
+dados$ano <- as.numeric(format(dados$data, format = '%Y'))
+
+# Mes
+dados$mes <- as.numeric(format(dados$data, format = '%m'))
+
+# Dia
+dados$dia <- as.numeric(format(dados$data, format = '%j'))
+
+# Dia da semana
+dados$dia.semana <- format(dados$data, format = '%u')
+```
+
+### Removendo variáveis com near-zero variance
+
+Nem sempre ter muitos dados significa ter muita informação relevante. Pensando nisso, iremos deletar as colunas que tem uma variância perto de zero, pois elas não vão agregar informação importante para a criação do modelo de predição.
+
+```{r, warning=FALSE, message=FALSE}
+colnames(dados[(nearZeroVar(dados, saveMetrics = FALSE))])
+```
+
+As colunas `r colnames(dados[(nearZeroVar(dados, saveMetrics = FALSE))])` tem uma variância próxima a zero e por essa razão iremos deletar. 
+
+```{r, warning=FALSE, message=FALSE}
+dados <- dados[-(nearZeroVar(dados, saveMetrics = FALSE))]
+```
+
+### Correlação 
+
+Temos uma apresentação visual das correlações entre as variáveis numéricas. 
+Antes iremos transformar de factor para númerico as variáveis tsls, win rate, tries, tbs, dia semana.
+
+```{r, warning=FALSE, message=FALSE}
+dados$tsls <- as.numeric(as.character(dados$tsls))
+dados$win.rate <- as.numeric(as.character(dados$win.rate))
+dados$tries <- as.numeric(as.character(dados$tries))
+dados$tbs <- as.numeric(as.character(dados$tbs))
+dados$dia.semana <- as.numeric(as.character(dados$dia.semana))
+```
+
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+nums <- sapply(dados, is.numeric)
+correlations <- cor(dados[,nums], use = 'complete.obs')
+corrplot(correlations, order = "hclust")
+```
+
+Neste plot você pode ver a correlação entre todas as variáveis. Duas variáveis podem ter uma correlação positiva, uma correlação negativa ou uma correlação neutra.
+Quando o ponto é vermelho, isso significa que temos uma correlação negativa. Quando o ponto é azul, temos uma correlação positiva. Branco significa que estas duas variáveis não tem nenhuma correlação.
+
+Completed Post tem correlação forte com: completed, total sessions, ttp, tries, dia, dia semana, tsls
+
+Muitas vezes não é interessante ter duas variáveis que dizem a mesma coisa. Como é o caso de dia e dia semana. Perceba que elas tem praticamente os mesmos valores de correlação com as demais variáveis. Por essa razão iremos ficar apenas com dia. 
+
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+dados$dia.semana <- NULL
+```
+
+### Outliers 
+
+Utilizando o boxplot iremo observar se as variáveis tsls, ttp, total sessions, tries, tbs, tsad possuem outliers. 
+
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+boxplot(dados$tsls, data=dados$tsls, main="TSLS", 
+    ylab="Tempo desde a última sessão")
+```
+
+O tempo desde a última sessão não possui outlier
+
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+boxplot(dados$ttp, data=dados$ttp, main="TTP", 
+    ylab="Tempo total jogado")
+```
+
+O tempo total jogado apresenta muitos outliers. Talvez seja interessante excluir os outliers em algum modelo no futuro. Pois muitas vezes outliers podem influenciar negativamente um modelo
+
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+boxplot(dados$total.sessions, data=dados$total.sessions, main="Total Sessions", 
+    ylab="Número total de sessões")
+```
+
+O número total de sessões apresenta muitos outliers
+
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+boxplot(dados$tries, data=dados$tries, main="Tries", 
+    ylab="Número de tentativas totais")
+```
+
+O número de tentativas totais apresenta muitos outliers
+
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+boxplot(dados$tbs, data=dados$tbs, main="TBS", 
+    ylab="Média entre sessões desde o activation date")
+```
+
+A média entre sessões desde o activation date apresenta um número razoável de outliers
+
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+boxplot(dados$tsad, data=dados$tsad, main="TSAD", 
+    ylab="Tempo desde a última sessão")
+```
+
+O tempo desde a última sessão não apresenta outlier.
+
+Foi decidido que não iriamos deletar os outliers inicialmente. Talvez seja interessante excluir no futuro como um das estratégias para melhorar o modelo. 
+
+### Sumarização 
+
+Uma sumarização geral dos dados pode ser observada a seguir:
+
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+summary(dados)
+```
+
+Notamos que as variáveis ls.date, tsls e tbs possuem grande quantidade de valores NA/NULL. Se necessário podemos pensar no futuro em Imputation para os valores que estão faltando. 
+
+## Um modelo básico
+
+Para a criação do modelo utilizei a biblioteca h2o, por se tratar de um open-source software para big-data analysis. O h2o é bastante rápido e flexível, podendo assim ser possível carregar uma grande quantidade de dados. Faz parte de uma comunidade que vem crescendo cada dia mais.
+
+Inicialmente iremos criar 3 modelos básicos onde cada modelo será de um algoritmo diferente. Iremos utilizar:
+
+* GLM (Generalized linear model)
+* Random Florest
+* GBM (Gradient Boosting Algorithm)
+
+O nosso objetivo nessa etapa é encontrar o melhor modelo para o nosso problema sem utilizar nenhum tipo de pre processamento, transformação, criação de features.
+Depois de encontrado o melhor modelo iremos aplicar todo o pre processamento já feito, transformação de variáveis, etc. Com o objetivo final de deixar o modelo ainda melhor. 
+
+### Dividindo os dados em treino e validação
+
+Inicialmente vamos dividir o dataset entre o dataset de treino (80%) e validação(20%). Essa divisão é importante por evita o overfitting, que ocorre quando um modelo estatístico super se adapta ao conjunto treinado, dessa forma quando o modelo recebe um valor pelo o qual ele não foi treinado, ele vai gerar uma predição muito ruim. Além disso, é importante essa divisão entre treino e validação para verificar em qual ponto o modelo começa a sofrer overfitting.
+
+
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+dados.originais <- read.csv("Dados/training_progress_predictor-3.csv")
+
+# Dividindo os dados
+set.seed(123)
+train.Index <- createDataPartition(dados.originais$completed.post, p = .8, list = F, times = 1)
+
+dados.treino <- dados.originais[ train.Index,]
+dados.valida  <- dados.originais[-train.Index,]
+
+# Add nome das colunas
+names(dados.treino) = names(dados.originais) 
+names(dados.valida) = names(dados.originais)
+
+
+write.csv2(dados.treino, file = 'Dados/treino.csv', row.names = FALSE)
+write.csv2(dados.valida, file = 'Dados/validacao.csv', row.names = FALSE)
+```
+
+### Criando vários modelos
+
+```{r, warning=FALSE, message=FALSE, results='hide'}
+# Carregando a biblioteca h2o
+conn <- h2o.init(nthreads = -1)
+
+# Importando arquivo no h2o
+path.input <- "/home/rodolfo/Desktop/tfg/Dados/treino.csv"
+dados.train <- h2o.importFile(path = path.input, destination_frame = "train.hex")
+path.validacao <- "/home/rodolfo/Desktop/tfg/Dados/validacao.csv"
+dados.validacao <- h2o.importFile(path = path.validacao, destination_frame = "validacao.hex")
+```
+
+Vamos inicialmente trabalhar com os modelos GBM, random florest e GLM. O ideal seria inicialmente rodar todos os modelos com um grande número de árvores, grande profundidade e uma taxa de aprendizado pequena por interação, porém isso leva um tempo grande na minha máquina atual (com apenas 4GB)
+
+```{r, warning=FALSE, message=FALSE, results='hide'}
+# Coluna que se deseja prever
+myY <- "completed.post"
+ 
+# Coluna que deve ser ignorada pelo modelo
+ignored_columns <- "completed.post"
+ 
+myX <- setdiff(setdiff(names(dados.train), myY), ignored_columns)
+ 
+# GBM
+gbm <- h2o.gbm(x = myX, build_tree_one_node = T,
+            y = myY,
+            training_frame    = dados.train,
+            validation_frame  = dados.validacao,
+            ntrees            = 50,
+            max_depth         = 6,
+            learn_rate        = 0.1)
+
+# DRF
+drf <- h2o.randomForest(x = myX,
+                     y = myY,
+                     training_frame    = dados.train,
+                     validation_frame  = dados.validacao,
+                     ntrees            = 50,
+                     max_depth         = 30)
+
+# GLM
+glm <- h2o.glm(x = myX,
+            y = myY,
+            training_frame    = dados.train,
+            validation_frame  = dados.validacao,
+            lambda            = 1e-5)
+```
+
+```{r, warning=FALSE, message=FALSE, results='hide', fig.align='center'}
+# Score de cada modelo
+trainr2.gbm <- h2o.r2(gbm)
+testr2.gbm  <- h2o.r2(gbm, valid = TRUE)
+ 
+trainr2.drf <- h2o.r2(drf)
+testr2.drf  <- h2o.r2(drf, valid = TRUE)
+ 
+trainr2.glm <- h2o.r2(glm)
+testr2.glm  <- h2o.r2(glm, valid = TRUE)
+ 
+toPlot <- data.frame(Rsquared = c(trainr2.gbm, testr2.gbm, trainr2.drf, testr2.drf, trainr2.glm, testr2.glm),
+                        tipo = c("treino", "validacao", "treino", "validacao", "treino", "validacao"),
+                        modelo = c("GBM","GBM","RF", "RF","GLM", "GLM"))
+```
+
+Para verificar qual dos 3 modelos é o melhor, utilizamos a métrica Rsquared, onde o valor do Rsquared (entre 0 e 1) é o percentual de variância explicada pelo o modelo. Na regressão, o Rsquared é uma medida estatística de quão bem a linha de regressão aproxima os pontos de dados reais. Um Rsquared igual a 1 indica que a linha de regressão encaixa perfeitamente os dados. Quanto maior foi o Rsquared melhor é o modelo.
+
+
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+ggplot(data=toPlot, aes(x = modelo, y = Rsquared, fill = tipo)) +
+ geom_bar(stat="identity", position=position_dodge()) +
+ theme_classic() +
+ labs(title = "Comparando os modelos") +
+ theme(axis.ticks = element_blank())
+```
+
+É possível notar que o GBM teve um melhor resultado do que os outros modelos, obtendo assim um Rsquared maior. Por esse motivo optamos por escolher o modelo GBM para realizar a predição. Porém antes de realizar a predição vamos tentar melhor ainda mais esse modelo utilizando várias estratégias. 
+
+## Investigando o GBM 
+
+Como o GBM foi o escolhido, é interessante observar como se deu o treinamento ao longo das criações das árvores. Para evitar o overfitting dividimos os dados de treino em treino e validação. Dessa forma podemos observar o exato momento em que o modelo pode passa a sofrer o overfitting.
+
+<div style="text-align:center" markdown="1">
+![treinamento](/home/rodolfo/Desktop/tfg/img/gbm_treinamento.png)
+</div>
+
+A linha azul significa a evolução do treino e a linha laranja significa a evolução da validação. É possível notar que depois da árvore 30, o modelo meio que se estabiliza. 
+
+### GBM com menos árvores.
+
+Como observado anteriormente, depois da árvore 30 o modelo se estabiliza. Por esse motivo criamos um novo modelo, dessa vez parando o treinamento na árvore 30, já que treinar além da árvore 30 traz pouco beneficio para o modelo. 
+
+```{r, warning=FALSE, message=FALSE, results='hide'}
+# GBM
+gbm.30 <- h2o.gbm(x = myX, build_tree_one_node = T,
+            y = myY,
+            training_frame    = dados.train,
+            validation_frame  = dados.validacao,
+            ntrees            = 30,
+            max_depth         = 6,
+            learn_rate        = 0.1)
+
+# Score de cada modelo
+trainr2gbm.30 <- h2o.r2(gbm.30)
+testr2gbm.30  <- h2o.r2(gbm.30, valid = TRUE)
+```
+
+```{r, warning=FALSE, message=FALSE, fig.align='center', echo=FALSE}
+# Comparação entre o modelo antigo e modelo novo
+toPlot <- data.frame(Rsquared = c(trainr2.gbm, testr2.gbm, trainr2gbm.30, testr2gbm.30),
+                        tipo = c("treino", "validacao", "treino", "validacao"),
+                        modelo = c("GBM","GBM","GBM 2","GBM 2"))
+```
+
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+ggplot(data=toPlot, aes(x = modelo, y = Rsquared, fill = tipo)) +
+ geom_bar(stat="identity", position=position_dodge()) +
+ theme_classic() +
+ labs(title = "Comparando os modelos GBM") +
+ theme(axis.ticks = element_blank())
+```
+
+É possível notar que mesmo utilizando menos árvores o valor do Rsquared foi praticamente o mesmo. O que significa que em menos tempo, com menos processamento, conseguimos um resultado similar. 
+
+É interessante notar também a importância das variáveis para a criação dos modelos.
+
+<div style="text-align:center" markdown="1">
+![importancia](/home/rodolfo/Desktop/tfg/img/gbm_30_importancia.png)
+</div>
+
+Notamos que a variável **completed, tsad, ttp, tsls** foram as variáveis com maior importância para a criação do modelo. Esse comportamento já foi previsto antes mesmo da criação do modelo quando a gente verificou a correlação entre a variável respostas e demais variáveis. 
+
+### GBM com nova features
+
+Ao criar novas variáveis podemos agregar valor e melhorar o modelo.
+
+Foi observado no pré processamento que é interessante adicionar uma nova feature derivada da variável ls.date. Vamos adicionar essa nova feature e criar um novo modelo.
+
+```{r, warning=FALSE, message=FALSE, results='hide', fig.align='center'}
+# Data
+dados.treino$data <- as.Date(as.character(dados.treino$ls.date), format = "%Y-%m-%d")
+dados.valida$data <- as.Date(as.character(dados.valida$ls.date), format = "%Y-%m-%d")
+
+# Dia
+dados.treino$dia <- as.numeric(format(dados.treino$data, format = '%j'))
+dados.valida$dia <- as.numeric(format(dados.valida$data, format = '%j'))
+
+dados.treino$data <- NULL
+dados.treino$ls.date <- NULL
+
+dados.valida$ls.date <- NULL
+dados.valida$data <- NULL
+
+write.csv2(dados.treino, file = 'Dados/treino_2.csv', row.names = FALSE)
+write.csv2(dados.valida, file = 'Dados/validacao_2.csv', row.names = FALSE)
+
+# Importando arquivo no h2o
+path.input <- "/home/rodolfo/Desktop/tfg/Dados/treino_2.csv"
+dados.train <- h2o.importFile(path = path.input, destination_frame = "train.hex")
+path.validacao <- "/home/rodolfo/Desktop/tfg/Dados/validacao_2.csv"
+dados.validacao <- h2o.importFile(path = path.validacao, destination_frame = "validacao.hex")
+
+# Coluna que se deseja prever
+myY <- "completed.post"
+ 
+# Coluna que deve ser ignorada pelo modelo
+ignored_columns <- "completed.post"
+ 
+myX <- setdiff(setdiff(names(dados.train), myY), ignored_columns)
+ 
+# GBM
+gbm_3 <- h2o.gbm(x = myX, build_tree_one_node = T,
+            y = myY,
+            training_frame    = dados.train,
+            validation_frame  = dados.validacao,
+            ntrees            = 30,
+            max_depth         = 6,
+            learn_rate        = 0.1)
+
+# Score de cada modelo
+trainr2.gbm3 <- h2o.r2(gbm_3)
+testr2.gbm3  <- h2o.r2(gbm_3, valid = TRUE)
+```
+
+```{r, warning=FALSE, message=FALSE, fig.align='center', echo=FALSE}
+# Comparação entre o modelo antigo e modelo novo
+toPlot <- data.frame(Rsquared = c(trainr2.gbm, testr2.gbm, trainr2gbm.30, testr2gbm.30, trainr2.gbm3, testr2.gbm3),
+                        tipo = c("treino", "validacao", "treino", "validacao", "treino", "validacao"),
+                        modelo = c("GBM","GBM","GBM 2","GBM 2","GBM 3","GBM 3"))
+```
+  
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+ggplot(data=toPlot, aes(x = modelo, y = Rsquared, fill = tipo)) +
+ geom_bar(stat="identity", position=position_dodge()) +
+ theme_classic() +
+ labs(title = "Comparando os modelos GBM") +
+ theme(axis.ticks = element_blank())
+```
+
+Essa nova feature não proporcionou nenhuma melhora no nosso modelo. 
+
+### GBM sem variáveis near-zero variance
+
+Foi visto anteriormente que algumas colunas tem uma variância perto de zero, elas não vão agregar informação importante para a criação do modelo de predição. Por esse motivo vamos excluir e treinar o modelo novamente para verificar se temos algum ganho. 
+
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+dados.treino <- dados.treino[-(nearZeroVar(dados.treino, saveMetrics = FALSE))]
+dados.valida <- dados.valida[-(nearZeroVar(dados.valida, saveMetrics = FALSE))]
+```
+
+Além disso, também iremos excluir a coluna user por ser apenas o ID de um user e não agregar valor. 
+
+```{r, warning=FALSE, message=FALSE, results='hide', fig.align='center'}
+dados.treino$user <- NULL
+dados.valida$user <- NULL
+
+write.csv2(dados.treino, file = 'Dados/treino_3.csv', row.names = FALSE)
+write.csv2(dados.valida, file = 'Dados/validacao_3.csv', row.names = FALSE)
+
+# Importando arquivo no h2o
+path.input <- "/home/rodolfo/Desktop/tfg/Dados/treino_3.csv"
+dados.train <- h2o.importFile(path = path.input, destination_frame = "train.hex")
+path.validacao <- "/home/rodolfo/Desktop/tfg/Dados/validacao_3.csv"
+dados.validacao <- h2o.importFile(path = path.validacao, destination_frame = "validacao.hex")
+
+# Coluna que se deseja prever
+myY <- "completed.post"
+ 
+# Coluna que deve ser ignorada pelo modelo
+ignored_columns <- "completed.post"
+ 
+myX <- setdiff(setdiff(names(dados.train), myY), ignored_columns)
+ 
+# GBM
+gbm_4 <- h2o.gbm(x = myX, build_tree_one_node = T,
+            y = myY,
+            training_frame    = dados.train,
+            validation_frame  = dados.validacao,
+            ntrees            = 30,
+            max_depth         = 6,
+            learn_rate        = 0.1)
+
+# Score de cada modelo
+trainr2.gbm4 <- h2o.r2(gbm_4)
+testr2.gbm4  <- h2o.r2(gbm_4, valid = TRUE)
+```
+
+```{r, warning=FALSE, message=FALSE, fig.align='center', echo=FALSE}
+# Comparação entre o modelo antigo e modelo novo
+toPlot <- data.frame(Rsquared = c(trainr2.gbm, testr2.gbm, trainr2gbm.30, testr2gbm.30, trainr2.gbm3, testr2.gbm3, trainr2.gbm4, testr2.gbm4),
+                        tipo = c("treino", "validacao", "treino", "validacao", "treino", "validacao", "treino", "validacao"),
+                        modelo = c("GBM","GBM","GBM 2","GBM 2","GBM 3","GBM 3","GBM 4","GBM 4"))
+
+```
+
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+ggplot(data=toPlot, aes(x = modelo, y = Rsquared, fill = tipo)) +
+ geom_bar(stat="identity", position=position_dodge()) +
+ theme_classic() +
+ labs(title = "Comparando os modelos GBM") +
+ theme(axis.ticks = element_blank())
+```
+
+O GBM4 foi o último modelo criado até agora, já excluímos as variáveis com near zero variance, excluímos variável ls_data, criamos nova features e treinamos com menos árvores com o objetivo de evitar o overthing. 
+Percebemos que o GBM4 não teve uma melhora no valor do Rsquared, porém como excluímos algumas colunas podemos dizer que ele é o nosso melhor modelo pois garante um Rsquared similar aos anteriores e possui menos dados.
+
+### GBM com completed post sem "anormalidades"
+
+Notamos anteriormente que temos algumas observações em que o completed.post é desconhecido. Além disso, temos valores acima de 1. Por acreditar que um valor maior que 1 na variável completed.post seja um erro na aquisição dos dados, iremos deletar essas observações. Também iremos deletar observações com NA na variável completed post pela mesma razão.
+
+
+```{r, warning=FALSE, message=FALSE, results='hide', fig.align='center'}
+dados.treino$completed.post <- as.numeric(as.character(dados.treino$completed.post))
+dados.valida$completed.post <- as.numeric(as.character(dados.valida$completed.post))
+
+dados.treino <- filter(dados.treino, completed.post <= 1)
+dados.valida <- filter(dados.valida, completed.post <= 1)
+
+write.csv2(dados.treino, file = 'Dados/treino_4.csv', row.names = FALSE)
+write.csv2(dados.valida, file = 'Dados/validacao_4.csv', row.names = FALSE)
+
+# Importando arquivo no h2o
+path.input <- "/home/rodolfo/Desktop/tfg/Dados/treino_4.csv"
+dados.train <- h2o.importFile(path = path.input, destination_frame = "train.hex")
+path.validacao <- "/home/rodolfo/Desktop/tfg/Dados/validacao_4.csv"
+dados.validacao <- h2o.importFile(path = path.validacao, destination_frame = "validacao.hex")
+
+# Coluna que se deseja prever
+myY <- "completed.post"
+ 
+# Coluna que deve ser ignorada pelo modelo
+ignored_columns <- "completed.post"
+ 
+myX <- setdiff(setdiff(names(dados.train), myY), ignored_columns)
+ 
+# GBM
+gbm_5 <- h2o.gbm(x = myX, build_tree_one_node = T,
+            y = myY,
+            training_frame    = dados.train,
+            validation_frame  = dados.validacao,
+            ntrees            = 30,
+            max_depth         = 6,
+            learn_rate        = 0.1)
+
+# Score de cada modelo
+trainr2.gbm5 <- h2o.r2(gbm_5)
+testr2.gbm5  <- h2o.r2(gbm_5, valid = TRUE)
+```
+
+```{r, warning=FALSE, message=FALSE, fig.align='center', echo=FALSE}
+# Comparação entre o modelo antigo e modelo novo
+toPlot <- data.frame(Rsquared = c(trainr2.gbm, testr2.gbm, trainr2gbm.30, testr2gbm.30, trainr2.gbm3, testr2.gbm3, trainr2.gbm4, testr2.gbm4, trainr2.gbm5, testr2.gbm5),
+                        tipo = c("treino", "validacao", "treino", "validacao", "treino", "validacao", "treino", "validacao", "treino", "validacao"),
+                        modelo = c("GBM","GBM","GBM 2","GBM 2","GBM 3","GBM 3","GBM 4","GBM 4","GBM 5","GBM 5"))
+```
+
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+ggplot(data=toPlot, aes(x = modelo, y = Rsquared, fill = tipo)) +
+ geom_bar(stat="identity", position=position_dodge()) +
+ theme_classic() +
+ labs(title = "Comparando os modelos GBM") +
+ theme(axis.ticks = element_blank())
+```
+
+O modelo GBM5 apresentou uma melhora significativa. O Rsquared do treino ficou em `r trainr2.gbm5` e da validação ficou em `r testr2.gbm5`. Ao excluir valores "anormais" do dataset o modelo ficou menos confuso e com isso consegue acertar mais. É importante destacar que esse valor é bastante alto no mundo real. 
+
+Olhando mais de perto como se deu o treinamento temos:
+
+<div style="text-align:center" markdown="1">
+![treinamento](/home/rodolfo/Desktop/tfg/img/gbm5_treinamento.png)
+</div>
+
+As variáveis que mais contribuiram para a criação do modelo foram:
+
+<div style="text-align:center" markdown="1">
+![importancia5](/home/rodolfo/Desktop/tfg/img/gbm5_importancia.png)
+</div>
+
+Mesmo com um valor de Rsquared alto, ainda é possível melhorar o modelo mas temos que ter mais cuidado para não causar overfitting. 
+
+### GBM com imputation
+
+As 5 variáveis que mais contribuem para a criação do modelo (figura anterior) são: **completed, ttp, tsad, tries, tsls**. Dessas 5 variáveis 2 possuem algumas observaçõe com valores NA/NULL são as variáveis **tries e tsls**. Tentando melhorar ainda mais o modelo iremos fazer uma imputation simples.
+
+Para a imputation, o ideal seria criar um modelo que iria realizar uma predição dos valores faltantes. A gente poderia usar o Mice. Porém a titulo de demonstração irei utilizar o valor mais comum da coluna (MODA) para realizar a imputation nas colunas trie e tsls.
+
+```{r, warning=FALSE, message=FALSE, results='hide', fig.align='center'}
+getmode <- function(v) {
+   uniqv <- unique(v)
+   uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+
+# Imputation tsls 
+dados.treino$tsls <- as.numeric(as.character(dados.treino$tsls))
+dados.valida$tsls <- as.numeric(as.character(dados.valida$tsls))
+temp <- filter(dados.treino, tsls > 0)
+
+dados.treino$tsls[is.na(dados.treino$tsls)] <- getmode(temp$tsls)
+dados.valida$tsls[is.na(dados.valida$tsls)] <- getmode(temp$tsls)
+
+# Imputation tries
+dados.treino$tries <- as.numeric(as.character(dados.treino$tries))
+dados.valida$tries <- as.numeric(as.character(dados.valida$tries))
+temp <- filter(dados.treino, tries > 0)
+
+dados.treino$tries[is.na(dados.treino$tries)] <- getmode(temp$tries)
+dados.valida$tries[is.na(dados.valida$tries)] <- getmode(temp$tries)
+
+write.csv2(dados.treino, file = 'Dados/treino_5.csv', row.names = FALSE)
+write.csv2(dados.valida, file = 'Dados/validacao_5.csv', row.names = FALSE)
+
+# Importando arquivo no h2o
+path.input <- "/home/rodolfo/Desktop/tfg/Dados/treino_5.csv"
+dados.train <- h2o.importFile(path = path.input, destination_frame = "train.hex")
+path.validacao <- "/home/rodolfo/Desktop/tfg/Dados/validacao_5.csv"
+dados.validacao <- h2o.importFile(path = path.validacao, destination_frame = "validacao.hex")
+
+# Coluna que se deseja prever
+myY <- "completed.post"
+ 
+# Coluna que deve ser ignorada pelo modelo
+ignored_columns <- "completed.post"
+ 
+myX <- setdiff(setdiff(names(dados.train), myY), ignored_columns)
+ 
+# GBM
+gbm_6 <- h2o.gbm(x = myX, build_tree_one_node = T,
+            y = myY,
+            training_frame    = dados.train,
+            validation_frame  = dados.validacao,
+            ntrees            = 30,
+            max_depth         = 6,
+            learn_rate        = 0.1)
+
+# Score de cada modelo
+trainr2.gbm6 <- h2o.r2(gbm_6)
+testr2.gbm6  <- h2o.r2(gbm_6, valid = TRUE)
+```
+
+```{r, warning=FALSE, message=FALSE, fig.align='center', echo=FALSE}
+# Comparação entre o modelo antigo e modelo novo
+toPlot <- data.frame(Rsquared = c(trainr2.gbm, testr2.gbm, trainr2gbm.30, testr2gbm.30, trainr2.gbm3, testr2.gbm3, trainr2.gbm4, testr2.gbm4, trainr2.gbm5, testr2.gbm5, trainr2.gbm6, testr2.gbm6),
+                        tipo = c("treino", "validacao", "treino", "validacao", "treino", "validacao", "treino", "validacao", "treino", "validacao", "treino", "validacao"),
+                        modelo = c("GBM","GBM","GBM 2","GBM 2","GBM 3","GBM 3","GBM 4","GBM 4","GBM 5","GBM 5", "GBM 6", "GBM 6"))
+```
+
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+ggplot(data=toPlot, aes(x = modelo, y = Rsquared, fill = tipo)) +
+ geom_bar(stat="identity", position=position_dodge()) +
+ theme_classic() +
+ labs(title = "Comparando os modelos GBM") +
+ theme(axis.ticks = element_blank())
+```
+
+O ganho entre o modelo 6 e 5 foi minimo, não sendo possível verificar visualmente. A diferença no conjunto de treino do Rsquared do modelo 6 para o 5 foi de `r trainr2.gbm6 - trainr2.gbm5`
+
+<div style="text-align:center" markdown="1">
+![importancia5](/home/rodolfo/Desktop/tfg/img/gbm6_importancia.png)
+</div>
+
+É possível notar que o tsls subiu de importância se a gente comprar com o modelo passado. 
+
+Escolhemos o último modelo como sendo o melhor modelo dentre todos os modelos testados. Ele será o modelo que irá gerar a predição para o teste.
+
+### Realizando a predição 
+
+Depois de escolhido o modelo vamos prepara os dados do teste. Inicialmente deveremos criar a feature nova no dataset do teste. 
+
+O próximo passo é excluir todas as colunas que não estão presentes no modelo final **user, revenue, units, ls.date**
+
+
+```{r, warning=FALSE, message=FALSE, fig.align='center', results='hide'}
+test <- read.csv("Dados/test_progress_predictor-4.csv")
+
+test$data <- as.Date(as.character(test$ls.date), format = "%Y-%m-%d")
+test$dia <- as.numeric(format(test$data, format = '%j'))
+
+test$user <- NULL
+test$revenue <- NULL
+test$units <- NULL
+test$ls.date <- NULL
+test$data <- NULL
+
+write.csv2(test, file = 'Dados/test.csv', row.names = FALSE)
+
+# Carregando a tabela teste no h2o
+path_test <- "/home/rodolfo/Desktop/tfg/Dados/test.csv"
+data_test <- h2o.importFile(path = path_test, destination_frame = "test.hex")
+
+# Realizando a predição
+predicao = h2o.predict(object = gbm_6, newdata = data_test)
+h2o.exportFile(predicao, path = "/home/rodolfo/Desktop/tfg/Dados/predicao2.csv", force = TRUE)
+
+# Editando o arquivo de predição
+predicao2 <- read.csv("Dados/predicao2.csv")
+predicao2$predict <- as.character(predicao2$predict)
+predicao2$predict <- gsub(",", ".", predicao2$predict)
+predicao2$predict <- as.numeric(predicao2$predict)
+
+write.csv2(predicao2$predict, file = 'Dados/predicao.csv', row.names = FALSE)
+```
+
+Podemos notar que os valores da predição estão dentro do valor esperado (0-1). O que aumenta o indicio de que a nossa predição foi boa.
+
+```{r, warning=FALSE, message=FALSE}
+min(predicao2$predict)
+max(predicao2$predict)
+```
+
+Além disso, podemo verificar que a predição apresenta um histograma bastante parecido do histograma no treino.
+
+```{r, warning=FALSE, message=FALSE, fig.align='center'}
+hist(predicao2$predict, main="Histograma Predição Completed Post", 
+     xlab= "Completed Post")
+hist(dados.treino$completed.post, main="Histograma Treino Completed Post", 
+     xlab= "Completed Post")
+```
+
+Os dois histogramas estão bem similares o que aumenta o indicio de que o modelo é eficiente. 
